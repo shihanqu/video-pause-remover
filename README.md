@@ -4,6 +4,10 @@ Cuts the dead time out of videos — every second where nothing moves on screen 
 
 Analysis runs on the GPU — [MLX](https://github.com/ml-explore/mlx)/Metal on Apple Silicon, CuPy/CUDA on NVIDIA — at ~600 fps (≈20× realtime), with hardware decode (VideoToolbox / NVDEC) and a NumPy CPU fallback everywhere else. The export is a *smart cut*: in typical screen recordings ~90% of output frames are **bit-identical stream copies** of the source; only sub-GOP slivers at cut boundaries are re-encoded (libx264 crf 12).
 
+<p align="center"><img src="docs/usage.gif" alt="Dragging the threshold slider re-segments the video live — stats and keep/cut track update instantly — then Preview result plays the video back skipping every cut" width="820"></p>
+
+<p align="center"><em>Drag the threshold from strict (any change is motion) to loose; the keep/cut segments, stats, and heatmap update live off a cached analysis. Preview plays the result before you export.</em></p>
+
 ## Quick start
 
 ```sh
