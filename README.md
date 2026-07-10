@@ -45,11 +45,19 @@ The first open of a file runs a one-time analysis pass, cached in `cache/` — e
 
 `--dry-run --json` prints the full cut plan without writing anything; the export report includes `copied_pct`, `av_desync_ms`, and a `decode_errors` field from an automatic validation pass. Exit code 0 with `"out_path": null` means "nothing to cut." Agents: see [.claude/skills/remove-pauses/SKILL.md](.claude/skills/remove-pauses/SKILL.md).
 
+## Example
+
+[`examples/input.mp4`](examples/input.mp4) → [`examples/output.mp4`](examples/output.mp4) is a real input/output pair at the default 10% threshold: a 52 s screen recording cut to 29 s, **44% removed**, with **90% of the output stream-copied bit-identical** to the source (the [usage GIF](docs/usage.gif) above is this clip). Both are audio-stripped. Reproduce it with:
+
+```sh
+.venv/bin/python cli.py examples/input.mp4 -o /tmp/output.mp4
+```
+
 ## How it works
 
 1. **Analyze once.** ffmpeg (VideoToolbox/NVDEC) decodes ~288 px grayscale frames at 30 fps CFR (VFR-safe), batched into GPU tensors (`backend.py`: MLX, CuPy, or NumPy — same numerics, verified bit-equal on the frac metric, so caches are backend-independent). Per frame-pair, the GPU computes an 8 px-tile grid of two metrics: mean |Δluma| and the fraction of pixels changed beyond a noise gate auto-estimated from the footage (MAD-based). Global luma is normalized first, so exposure flicker never reads as motion. The tile grid is why region masks are free afterward.
 2. **Tune instantly.** Threshold with hysteresis (0.5× exit ratio) → absorb stills shorter than `--min-pause` → pad motion outward by `--pad`. Pure array math over the cached curve, identical in the UI (JS) and CLI (`segmentation.py`).
-3. **Smart-cut export.** Per kept segment, everything from the first keyframe onward is stream-copied; only the slice before it is re-encoded near-losslessly. Audio is cut with each piece (AAC at source bitrate, 4 ms edge fades so joins never click) and A/V travel together per piece, so sync error cannot accumulate. Output validation (decode check, duration, A/V delta) runs on every export.
+3. **Smart-cut export.** Per kept segment, everything from the first keyframe onward is stream-copied; only the slice before it is re-encoded near-losslessly (B-frames disabled to match the source's GOP structure at the splice). Audio is cut with each piece (AAC at source bitrate, 4 ms edge fades so joins never click) and A/V travel together per piece, so sync error cannot accumulate; silent sources get a synthesized anchor track — stripped at the end — that keeps the spliced timestamps strictly monotonic. Output validation (decode check, duration, A/V delta) runs on every export.
 
 ## Notes & limits
 

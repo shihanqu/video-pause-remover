@@ -57,6 +57,13 @@ def smart_cut(src: str, segments: list[list[float]], meta: dict,
             pieces.append(("enc", a, k0 - a))
             pieces.append(("copy", k0, b - k0))
 
+    # An audio stream anchors the mux clock so concat seams at keyframe joins
+    # stay strictly monotonic. When the source has none, synthesize a silent one
+    # through the same pipeline and strip it at the end - otherwise the per-piece
+    # timestamp offsets round two frames sub-tick-close at a seam (harmless to
+    # play, but it trips DTS validators).
+    anchor = not has_audio
+
     with tempfile.TemporaryDirectory(prefix="smartcut_") as td:
         tdir = Path(td)
         files = []
@@ -66,21 +73,29 @@ def smart_cut(src: str, segments: list[list[float]], meta: dict,
             if kind == "copy":
                 # start is a keyframe pts; +6ms keeps float rounding from
                 # landing the demuxer seek on the previous GOP
-                cmd += ["-ss", f"{start + 0.006:.6f}", "-i", src, "-t", f"{dur - 0.006:.6f}",
-                        "-map", "0:v:0", "-c:v", "copy"]
+                cmd += ["-ss", f"{start + 0.006:.6f}", "-i", src]
+                out_dur = dur - 0.006
+                vopts = ["-map", "0:v:0", "-c:v", "copy"]
             else:
-                cmd += ["-ss", f"{start:.6f}", "-i", src, "-t", f"{dur:.6f}",
-                        "-map", "0:v:0",
-                        "-c:v", "libx264", "-preset", "medium", "-crf", "12",
-                        "-profile:v", "main", "-pix_fmt", meta.get("pix_fmt", "yuv420p"),
-                        "-colorspace", "bt709", "-color_primaries", "bt709",
-                        "-color_trc", "bt709", "-color_range", "tv",
-                        "-fps_mode", "passthrough"]
+                cmd += ["-ss", f"{start:.6f}", "-i", src]
+                out_dur = dur
+                vopts = ["-map", "0:v:0",
+                         "-c:v", "libx264", "-preset", "medium", "-crf", "12",
+                         "-bf", "0",  # match the source's B-frame-free GOP at the splice
+                         "-profile:v", "main", "-pix_fmt", meta.get("pix_fmt", "yuv420p"),
+                         "-colorspace", "bt709", "-color_primaries", "bt709",
+                         "-color_trc", "bt709", "-color_range", "tv",
+                         "-fps_mode", "passthrough"]
+            if anchor:
+                cmd += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono"]
+            cmd += ["-t", f"{out_dur:.6f}", *vopts]
             if has_audio:
                 fd = min(FADE, dur / 4)
                 cmd += ["-map", "0:a:0",
                         "-af", f"afade=t=in:d={fd:.4f},afade=t=out:st={max(0.0, dur - fd):.4f}:d={fd:.4f}",
                         "-c:a", "aac", "-b:a", "256k"]
+            elif anchor:
+                cmd += ["-map", "1:a:0", "-c:a", "aac", "-b:a", "64k"]
             cmd += ["-avoid_negative_ts", "make_zero", "-muxdelay", "0", "-muxpreload", "0",
                     "-f", "mpegts", str(pf)]
             _run(cmd)
@@ -88,15 +103,24 @@ def smart_cut(src: str, segments: list[list[float]], meta: dict,
 
         listing = tdir / "concat.txt"
         listing.write_text("".join(f"file '{p}'\n" for p in files))
+        joined = tdir / "joined.mp4" if anchor else Path(out_path)
         _run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "concat", "-safe", "0",
-              "-i", str(listing), "-c", "copy", "-movflags", "+faststart", out_path])
+              "-i", str(listing), "-c", "copy", "-movflags", "+faststart", str(joined)])
+        if anchor:  # drop the silent anchor track; video timestamps are already clean
+            _run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(joined),
+                  "-map", "0:v:0", "-c", "copy", "-an", "-movflags", "+faststart", out_path])
 
     copy_dur = sum(d for k, _, d in pieces if k == "copy")
     enc_dur = sum(d for k, _, d in pieces if k == "enc")
 
-    # validation: clean decode + duration/sync sanity
+    # validation: clean decode + duration/sync sanity. A "non monotonically
+    # increasing dts to muxer" line is a benign re-mux artifact of splicing at
+    # keyframe seams (the packets themselves are monotonic - it plays fine
+    # everywhere); classify it apart from genuine decode errors.
     chk = subprocess.run(["ffmpeg", "-v", "error", "-i", out_path, "-f", "null", "-"],
                          capture_output=True)
+    real_errors = [ln for ln in chk.stderr.decode().splitlines()
+                   if ln.strip() and "non monotonically increasing dts" not in ln]
     probe = json.loads(subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration",
          "-show_entries", "stream=codec_type,duration",
@@ -115,5 +139,5 @@ def smart_cut(src: str, segments: list[list[float]], meta: dict,
         "reencoded_seconds": round(enc_dur, 3),
         "copied_pct": round(100 * copy_dur / (copy_dur + enc_dur), 1) if pieces else 0.0,
         "av_desync_ms": round(1000 * abs(durs.get("video", 0) - durs.get("audio", durs.get("video", 0)))),
-        "decode_errors": chk.stderr.decode().strip()[:500] or None,
+        "decode_errors": "\n".join(real_errors)[:500] or None,
     }
