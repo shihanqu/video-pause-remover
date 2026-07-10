@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -51,11 +52,15 @@ def main() -> None:
                    help="normalized rect whose changes are ignored (repeatable)")
     p.add_argument("--focus", action="append", default=[], metavar="X0,Y0,X1,Y1",
                    help="normalized rect; only changes inside it count (repeatable)")
+    p.add_argument("--backend", choices=["mlx", "cupy", "numpy"],
+                   help="compute backend (default: auto - MLX on Apple, CuPy on NVIDIA, NumPy CPU)")
     p.add_argument("--dry-run", action="store_true", help="analyze and report cuts, do not export")
     p.add_argument("--json", action="store_true", help="machine-readable report on stdout")
     p.add_argument("--quiet", action="store_true", help="no progress output")
     args = p.parse_args()
 
+    if args.backend:
+        os.environ["PAUSE_REMOVER_BACKEND"] = args.backend
     src = Path(args.input)
     if not src.exists():
         sys.exit(f"error: {src} not found")

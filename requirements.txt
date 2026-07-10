@@ -1,4 +1,8 @@
-mlx>=0.32
+mlx>=0.32; sys_platform == "darwin"
 numpy
 fastapi
 uvicorn[standard]
+
+# NVIDIA GPUs: additionally install CuPy for your CUDA version, e.g.
+#   pip install cupy-cuda12x
+# (on Linux, MLX's CUDA build also works: pip install "mlx[cuda]")

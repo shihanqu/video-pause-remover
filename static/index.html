@@ -612,7 +612,8 @@ async function poll() {
     $("overlay").style.display = "none";
     meta = s.meta; duration = meta.duration; view = { t0: 0, t1: duration };
     $("analysisInfo").textContent =
-      `${meta.width}×${meta.height} · ${fmt(duration)} · analyzed @ ${meta.analysis_fps_rate || "cached"} fps`;
+      `${meta.width}×${meta.height} · ${fmt(duration)} · analyzed @ ${meta.analysis_fps_rate || "cached"} fps` +
+      (meta.backend ? ` · ${meta.backend}` : "");
     vid.src = "/video?v=" + encodeURIComponent(s.path);
     await refreshCurves();
   }

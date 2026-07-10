@@ -1,6 +1,6 @@
 ---
 name: remove-pauses
-description: Cut still/pause sections out of a video at source quality, keeping only motion. Use when asked to remove pauses, dead time, or freezes from a screen recording or video, condense a video to constant movement, or find out where a video is still. Input mp4/mov; macOS Apple Silicon.
+description: Cut still/pause sections out of a video at source quality, keeping only motion. Use when asked to remove pauses, dead time, or freezes from a screen recording or video, condense a video to constant movement, or find out where a video is still. Input mp4/mov; GPU on Apple Silicon (MLX) or NVIDIA (CuPy), CPU fallback anywhere.
 ---
 
 # Remove pauses from a video
@@ -12,9 +12,13 @@ the CLI (`cli.py`), not the web UI, unless the user asks to tune interactively.
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+.venv/bin/pip install cupy-cuda12x   # NVIDIA machines only (match CUDA version)
 ```
 
-Requires `ffmpeg` on PATH (`brew install ffmpeg`) and Apple Silicon (MLX).
+Requires `ffmpeg` on PATH (`brew install ffmpeg` / `apt install ffmpeg`).
+Compute auto-detects: MLX on Apple Silicon, CuPy on NVIDIA, NumPy CPU otherwise
+(still fast — the pipeline is decode-bound). Hardware decode (VideoToolbox/NVDEC)
+falls back to software automatically; no flags needed on any platform.
 
 ## Workflow
 
@@ -56,6 +60,7 @@ share of output that is bit-identical stream copy. Report these to the user.
 | `--ignore X0,Y0,X1,Y1` | — | normalized (0–1) rect whose changes don't count; repeatable |
 | `--focus X0,Y0,X1,Y1` | — | only changes inside this rect count; repeatable |
 | `--mode reencode` | smart | full re-encode fallback if a player glitches at smart-cut boundaries |
+| `--backend mlx\|cupy\|numpy` | auto | force the compute backend (rarely needed; results are identical) |
 
 ## Cautions
 
