@@ -1,0 +1,660 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pause Remover</title>
+<style>
+  :root {
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --ink: #ffffff;
+    --ink-2: #c3c2b7;
+    --muted: #898781;
+    --grid: #2c2c2a;
+    --baseline: #383835;
+    --hairline: rgba(255,255,255,0.10);
+    --accent: #3987e5;      /* curve / sequential hue */
+    --keep: #199e70;        /* kept (motion) spans */
+    --thresh: #c98500;      /* threshold line */
+    --danger: #e66767;      /* ignore-region outline */
+    --good: #0ca30c;        /* focus-region outline */
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--page); color: var(--ink);
+    font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  header {
+    display: flex; align-items: center; gap: 14px;
+    padding: 10px 16px; border-bottom: 1px solid var(--hairline); flex: 0 0 auto;
+  }
+  header h1 { font-size: 14px; font-weight: 600; letter-spacing: .2px; }
+  select, button, input[type=number] {
+    background: var(--surface); color: var(--ink-2);
+    border: 1px solid var(--hairline); border-radius: 8px;
+    padding: 5px 10px; font: inherit; outline: none; white-space: nowrap;
+  }
+  select:hover, button:hover { color: var(--ink); border-color: rgba(255,255,255,.22); cursor: pointer; }
+  button.primary { background: var(--accent); color: #fff; border-color: transparent; font-weight: 600; }
+  button.primary:hover { filter: brightness(1.1); }
+  button.primary:disabled { opacity: .5; cursor: default; }
+  button.on { color: var(--ink); border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .stats { color: var(--ink-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .stats b { color: var(--ink); font-weight: 600; }
+  .spacer { flex: 1; }
+
+  main { flex: 1; display: flex; min-height: 0; }
+  #left { flex: 1; display: flex; flex-direction: column; min-width: 0; padding: 12px 16px 8px; gap: 8px; }
+  #videoRow { flex: 1; display: flex; gap: 12px; min-height: 0; }
+  #videoWrap { position: relative; height: 100%; border-radius: 10px; overflow: hidden;
+               background: var(--surface); border: 1px solid var(--hairline); align-self: center; }
+  #vid { display: block; height: 100%; max-width: 100%; }
+  #regionCanvas { position: absolute; inset: 0; }
+  #regionCanvas.draw { cursor: crosshair; }
+
+  #side { width: 320px; flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+  .panel { background: var(--surface); border: 1px solid var(--hairline); border-radius: 10px; }
+  #segPanel { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  #segPanel .panel-title { padding: 8px 12px 6px; color: var(--muted); font-size: 11px;
+                           text-transform: uppercase; letter-spacing: .6px; }
+  #seglist { overflow-y: auto; flex: 1; padding: 0 6px 8px; }
+  .segrow { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 6px;
+            font-variant-numeric: tabular-nums; color: var(--ink-2); }
+  .segrow:hover { background: rgba(255,255,255,.04); }
+  .segrow.current { background: rgba(57,135,229,.12); }
+  .badge { font-size: 10px; font-weight: 700; letter-spacing: .5px; border-radius: 4px;
+           padding: 1px 6px; min-width: 42px; text-align: center; }
+  .badge.keep { background: rgba(25,158,112,.18); color: #35c793; }
+  .badge.cut  { background: rgba(255,255,255,.07); color: var(--muted); }
+  .badge.ovr  { outline: 1px dashed var(--thresh); }
+  .segrow .t { flex: 1; cursor: pointer; }
+  .segrow .dur { color: var(--muted); }
+  .segrow button { padding: 1px 7px; font-size: 11px; border-radius: 6px; }
+
+  #videoBar { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; flex-wrap: wrap; }
+  #timeDisp { font-variant-numeric: tabular-nums; color: var(--ink-2); min-width: 96px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--hairline);
+          border-radius: 999px; padding: 2px 10px; color: var(--ink-2); font-size: 12px; }
+  .chip .x { cursor: pointer; color: var(--muted); } .chip .x:hover { color: var(--danger); }
+  .chip.ignore { border-color: rgba(230,103,103,.5); }
+  .chip.focus  { border-color: rgba(12,163,12,.6); }
+
+  #timeline { position: relative; flex: 0 0 auto; user-select: none; }
+  #timeline canvas { display: block; width: 100%; border-radius: 4px; }
+  #heat   { height: 44px; }
+  #curveC { height: 120px; margin-top: 2px; }
+  #segbar { height: 16px; margin-top: 2px; }
+  #axis   { height: 18px; }
+  #tooltip { position: fixed; pointer-events: none; background: #222220; border: 1px solid var(--hairline);
+             border-radius: 8px; padding: 6px 10px; font-size: 12px; color: var(--ink-2); display: none;
+             z-index: 50; box-shadow: 0 4px 16px rgba(0,0,0,.5); font-variant-numeric: tabular-nums; }
+  #tooltip b { color: var(--ink); }
+
+  #controls { display: flex; align-items: center; gap: 18px; padding: 4px 0 6px; flex: 0 0 auto; flex-wrap: wrap; }
+  .ctl { display: flex; align-items: center; gap: 8px; color: var(--ink-2); }
+  .ctl label { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .ctl .val { font-variant-numeric: tabular-nums; min-width: 72px; color: var(--ink); }
+  #threshWrap { flex: 1; min-width: 320px; }
+  #thresh { flex: 1; -webkit-appearance: none; height: 4px; border-radius: 2px;
+            background: linear-gradient(90deg, #0d366b, #3987e5, #cde2fb); }
+  #thresh::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%;
+            background: var(--thresh); border: 2px solid #0d0d0d; box-shadow: 0 0 0 1px var(--thresh); cursor: ew-resize; }
+  .endlab { font-size: 11px; color: var(--muted); white-space: nowrap; }
+  input[type=number] { width: 64px; font-variant-numeric: tabular-nums; }
+
+  #overlay { position: fixed; inset: 0; background: rgba(13,13,13,.88); display: flex;
+             align-items: center; justify-content: center; flex-direction: column; gap: 14px; z-index: 100; }
+  #overlay .bar { width: 320px; height: 6px; border-radius: 3px; background: var(--grid); overflow: hidden; }
+  #overlay .bar i { display: block; height: 100%; background: var(--accent); width: 0%; transition: width .2s; }
+  #overlay .msg { color: var(--ink-2); }
+
+  #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #222220;
+           border: 1px solid var(--hairline); border-radius: 12px; padding: 14px 18px; display: none;
+           z-index: 60; box-shadow: 0 8px 32px rgba(0,0,0,.6); max-width: 640px; }
+  #toast .trow { display: flex; gap: 16px; align-items: center; }
+  #toast .detail { color: var(--muted); font-size: 12px; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  kbd { background: var(--grid); border-radius: 4px; padding: 0 5px; font: 11px ui-monospace, monospace; color: var(--ink-2); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Pause Remover</h1>
+  <select id="fileSel" title="Video file"></select>
+  <div class="stats" id="stats">–</div>
+  <div class="spacer"></div>
+  <span class="endlab" id="analysisInfo"></span>
+  <select id="exportMode" title="Export mode">
+    <option value="smart">smart cut · source quality</option>
+    <option value="reencode">full re-encode</option>
+  </select>
+  <button class="primary" id="exportBtn">Export motion-only</button>
+</header>
+
+<main>
+  <div id="left">
+    <div id="videoRow">
+      <div id="videoWrap">
+        <video id="vid" playsinline></video>
+        <canvas id="regionCanvas"></canvas>
+      </div>
+      <div id="side">
+        <div class="panel" id="segPanel">
+          <div class="panel-title" id="segTitle">Segments</div>
+          <div id="seglist"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="videoBar">
+      <button id="playBtn" title="Space">▶</button>
+      <span id="timeDisp">0:00.0 / 0:00.0</span>
+      <button id="previewBtn" title="Playback skips cut pauses (P)">Preview result</button>
+      <button id="muteBtn">Mute</button>
+      <span style="width:12px"></span>
+      <button id="addIgnore" title="Drag a box on the video; changes inside it are ignored">+ Ignore region</button>
+      <button id="addFocus" title="Drag a box on the video; only changes inside it count">+ Focus region</button>
+      <span id="regionChips" style="display:inline-flex;gap:6px;flex-wrap:wrap"></span>
+      <div class="spacer"></div>
+      <span class="endlab">wheel = zoom timeline · double-click = reset · <kbd>space</kbd> play</span>
+    </div>
+
+    <div id="timeline">
+      <canvas id="heat" title="Change heatmap"></canvas>
+      <canvas id="curveC"></canvas>
+      <canvas id="segbar"></canvas>
+      <canvas id="axis"></canvas>
+      <div id="tooltip"></div>
+    </div>
+
+    <div id="controls">
+      <div class="ctl" id="threshWrap">
+        <span class="endlab">strict · any change is motion</span>
+        <input type="range" id="thresh" min="0" max="1000" value="780">
+        <span class="endlab">loose · small motion is still</span>
+        <span class="val" id="threshVal"></span>
+      </div>
+      <div class="ctl"><label>Min pause to cut</label><input type="number" id="minStill" value="0.40" step="0.05" min="0"> s</div>
+      <div class="ctl"><label>Motion padding</label><input type="number" id="pad" value="0.10" step="0.02" min="0"> s</div>
+      <div class="ctl" id="ovrCtl" style="display:none"><span class="endlab" id="ovrLab"></span><button id="ovrClear">clear</button></div>
+    </div>
+  </div>
+</main>
+
+<div id="overlay"><div class="msg" id="ovMsg">Analyzing…</div><div class="bar"><i id="ovBar"></i></div></div>
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const vid = $("vid"), tooltip = $("tooltip");
+const cvs = { heat: $("heat"), curve: $("curveC"), seg: $("segbar"), axis: $("axis") };
+
+let meta = null, frac = null, fps = 30, duration = 0;
+let rects = [];                    // region masks: {x0,y0,x1,y1,mode}
+let overrides = [];                // {t0,t1,force:'keep'|'cut'}
+let segs = [], keepList = [];
+let view = { t0: 0, t1: 1 };       // visible time window
+let hoverT = null, previewMode = false;
+let drawMode = null, dragRect = null;
+
+// ---------- formatting ----------
+const fmt = s => { s = Math.max(0, s); const m = Math.floor(s / 60);
+  return m + ":" + (s - m * 60).toFixed(1).padStart(4, "0"); };
+const fmtPct = v => v <= 0 ? "0 (exact)" : (v * 100).toFixed(v < 0.001 ? 3 : 2) + "% area";
+
+// ---------- threshold slider (log scale, left = strict) ----------
+const TAU_MIN = 1e-4, TAU_MAX = 0.7;
+// snap to 2 significant figures so slider positions land on clean values (10%, not 9.98%)
+const sliderToTau = s => s <= 0 ? 0 : Number((TAU_MIN * Math.pow(TAU_MAX / TAU_MIN, s / 1000)).toPrecision(2));
+function tau() { return sliderToTau(+$("thresh").value); }
+
+// ---------- sequential ramp (validated reference palette, dark surface) ----------
+const RAMP_STEPS = ["#0d366b","#104281","#184f95","#1c5cab","#256abf","#2a78d6",
+                    "#3987e5","#5598e7","#6da7ec","#86b6ef","#9ec5f4","#b7d3f6","#cde2fb"];
+const RAMP = (() => {
+  const c = document.createElement("canvas"); c.width = 256; c.height = 1;
+  const g = c.getContext("2d"), gr = g.createLinearGradient(0, 0, 256, 0);
+  RAMP_STEPS.forEach((h, i) => gr.addColorStop(i / (RAMP_STEPS.length - 1), h));
+  g.fillStyle = gr; g.fillRect(0, 0, 256, 1);
+  const d = g.getImageData(0, 0, 256, 1).data, out = [];
+  for (let i = 0; i < 256; i++) out.push(`rgb(${d[i*4]},${d[i*4+1]},${d[i*4+2]})`);
+  return out;
+})();
+const logU = v => v <= 0 ? -1 : Math.max(0, Math.min(1, (Math.log10(v) - Math.log10(TAU_MIN)) / (Math.log10(1) - Math.log10(TAU_MIN))));
+const rampColor = v => { const u = logU(v); return u < 0 ? "#1a1a19" : RAMP[Math.round(u * 255)]; };
+
+// ---------- segmentation (client-side, instant) ----------
+function computeSegments() {
+  if (!frac) return;
+  const n = frac.length, t = tau(), exitT = t * 0.5;
+  const minStillF = Math.round((+$("minStill").value || 0) * fps);
+  const padF = Math.round((+$("pad").value || 0) * fps);
+  const motion = new Uint8Array(n);
+  let m = frac[0] > t;
+  for (let i = 0; i < n; i++) {
+    const v = frac[i];
+    if (m) { if (v <= exitT) m = false; } else { if (v > t) m = true; }
+    motion[i] = m ? 1 : 0;
+  }
+  // still runs shorter than the minimum pause stay as motion
+  for (let i = 0; i < n;) {
+    if (motion[i]) { i++; continue; }
+    let j = i; while (j < n && !motion[j]) j++;
+    if (j - i < minStillF) motion.fill(1, i, j);
+    i = j;
+  }
+  // pad motion outward
+  if (padF > 0) {
+    const src = motion.slice();
+    for (let i = 0; i < n; i++) if (src[i]) motion.fill(1, Math.max(0, i - padF), Math.min(n, i + padF + 1));
+  }
+  // user overrides stamp the mask directly
+  for (const o of overrides) {
+    const a = Math.max(0, Math.round(o.t0 * fps)), b = Math.min(n, Math.round(o.t1 * fps));
+    motion.fill(o.force === "keep" ? 1 : 0, a, b);
+  }
+  // collapse to segments
+  segs = []; keepList = [];
+  for (let i = 0; i < n;) {
+    let j = i; const k = motion[i];
+    while (j < n && motion[j] === k) j++;
+    const a = i / fps, b = j >= n ? duration : j / fps;
+    segs.push({ a, b, keep: !!k });
+    if (k) keepList.push([a, b]);
+    i = j;
+  }
+  const kept = keepList.reduce((s, [a, b]) => s + (b - a), 0);
+  const cuts = segs.filter(s => !s.keep).length;
+  $("stats").innerHTML = `<b>${fmt(duration)}</b> → <b>${fmt(kept)}</b> · −${fmt(duration - kept)} ` +
+    `(${duration ? ((1 - kept / duration) * 100).toFixed(1) : 0}%) · ${cuts} pause${cuts === 1 ? "" : "s"} cut`;
+  $("threshVal").textContent = fmtPct(t);
+  $("ovrCtl").style.display = overrides.length ? "" : "none";
+  $("ovrLab").textContent = overrides.length + " manual override" + (overrides.length > 1 ? "s" : "");
+  renderSegList();
+  dirty = true;
+}
+
+// ---------- timeline rendering ----------
+let dirty = true;
+function ctx2d(c) {
+  const dpr = devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+  const g = c.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); return [g, w, h];
+}
+const tToX = (t, w) => (t - view.t0) / (view.t1 - view.t0) * w;
+const xToT = (x, w) => view.t0 + x / w * (view.t1 - view.t0);
+function colMax(t0, t1) { // max change over pairs covering [t0,t1]
+  if (!frac) return 0;
+  let i0 = Math.max(0, Math.floor(t0 * fps)), i1 = Math.min(frac.length - 1, Math.ceil(t1 * fps));
+  let v = 0; for (let i = i0; i <= i1; i++) if (frac[i] > v) v = frac[i];
+  return v;
+}
+const hatch = (() => {
+  const p = document.createElement("canvas"); p.width = p.height = 8;
+  const g = p.getContext("2d");
+  g.strokeStyle = "rgba(137,135,129,0.55)"; g.lineWidth = 1.2;
+  g.beginPath(); g.moveTo(-2, 10); g.lineTo(10, -2); g.moveTo(-2, 2); g.lineTo(2, -2); g.moveTo(6, 10); g.lineTo(10, 6); g.stroke();
+  return p;
+})();
+
+function render() {
+  if (!frac) return;
+  const dt = view.t1 - view.t0;
+
+  // --- heatmap strip ---
+  {
+    const [g, w, h] = ctx2d(cvs.heat);
+    g.fillStyle = "#1a1a19"; g.fillRect(0, 0, w, h);
+    for (let x = 0; x < w; x++) {
+      g.fillStyle = rampColor(colMax(xToT(x, w), xToT(x + 1, w)));
+      g.fillRect(x, 0, 1, h);
+    }
+    shadeCuts(g, w, h);
+    drawPlayhead(g, w, h);
+  }
+
+  // --- curve (log y) ---
+  {
+    const [g, w, h] = ctx2d(cvs.curve);
+    g.fillStyle = "#1a1a19"; g.fillRect(0, 0, w, h);
+    const top = 4, bot = h - 4, span = bot - top;
+    const yOf = v => { const u = logU(v); return u < 0 ? bot : bot - Math.max(0.02, u) * span; };
+    // decade gridlines
+    g.strokeStyle = "#2c2c2a"; g.fillStyle = "#898781"; g.font = "10px system-ui"; g.textAlign = "right";
+    for (const [v, lab] of [[0.001, "0.1%"], [0.01, "1%"], [0.1, "10%"], [1, "100%"]]) {
+      const y = yOf(v);
+      g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke();
+      g.fillText(lab, w - 4, y - 3);
+    }
+    shadeCuts(g, w, h);
+    // curve
+    g.strokeStyle = "#3987e5"; g.lineWidth = 2; g.lineJoin = "round"; g.beginPath();
+    for (let x = 0; x < w; x++) {
+      const y = yOf(colMax(xToT(x, w), xToT(x + 1, w)));
+      x === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
+    }
+    g.stroke();
+    // threshold line (draggable)
+    const ty = yOf(tau());
+    g.strokeStyle = "#c98500"; g.lineWidth = 1.5; g.setLineDash([6, 4]);
+    g.beginPath(); g.moveTo(0, ty); g.lineTo(w, ty); g.stroke(); g.setLineDash([]);
+    g.fillStyle = "#c98500"; g.font = "10px system-ui"; g.textAlign = "left";
+    g.fillText("threshold", 6, ty - 4);
+    // hover crosshair
+    if (hoverT !== null) {
+      const hx = tToX(hoverT, w);
+      g.strokeStyle = "rgba(255,255,255,.35)"; g.lineWidth = 1;
+      g.beginPath(); g.moveTo(hx, 0); g.lineTo(hx, h); g.stroke();
+    }
+    drawPlayhead(g, w, h);
+  }
+
+  // --- segments track ---
+  {
+    const [g, w, h] = ctx2d(cvs.seg);
+    g.fillStyle = "#1a1a19"; g.fillRect(0, 0, w, h);
+    const pat = g.createPattern(hatch, "repeat");
+    for (const s of segs) {
+      const x0 = Math.max(0, tToX(s.a, w)), x1 = Math.min(w, tToX(s.b, w));
+      if (x1 < 0 || x0 > w || x1 - x0 < 0.3) continue;
+      if (s.keep) { g.fillStyle = "#199e70"; g.fillRect(x0, 2, Math.max(1, x1 - x0 - 1), h - 4); }
+      else { g.fillStyle = "#26262a"; g.fillRect(x0, 2, x1 - x0, h - 4);
+             g.fillStyle = pat; g.fillRect(x0, 2, x1 - x0, h - 4); }
+    }
+    drawPlayhead(g, w, h);
+  }
+
+  // --- axis ---
+  {
+    const [g, w, h] = ctx2d(cvs.axis);
+    g.clearRect(0, 0, w, h);
+    g.fillStyle = "#898781"; g.font = "10px system-ui"; g.textAlign = "center";
+    g.strokeStyle = "#383835";
+    const steps = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300];
+    const step = steps.find(s => dt / s <= 12) || 600;
+    for (let t = Math.ceil(view.t0 / step) * step; t <= view.t1; t += step) {
+      const x = tToX(t, w);
+      g.beginPath(); g.moveTo(x, 0); g.lineTo(x, 4); g.stroke();
+      g.fillText(fmt(t), x, 14);
+    }
+  }
+}
+function shadeCuts(g, w, h) {
+  g.fillStyle = "rgba(0,0,0,0.45)";
+  for (const s of segs) if (!s.keep) {
+    const x0 = Math.max(0, tToX(s.a, w)), x1 = Math.min(w, tToX(s.b, w));
+    if (x1 > 0 && x0 < w) g.fillRect(x0, 0, x1 - x0, h);
+  }
+}
+function drawPlayhead(g, w, h) {
+  const x = tToX(vid.currentTime, w);
+  if (x < 0 || x > w) return;
+  g.strokeStyle = "#ffffff"; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke();
+}
+
+// ---------- render loop ----------
+function maybeSkip() {
+  if (!previewMode || vid.paused || !segs.length) return;
+  const t = vid.currentTime;
+  const cut = segs.find(s => !s.keep && t >= s.a && t < s.b - 0.02);
+  if (cut) vid.currentTime = Math.min(cut.b + 0.001, duration - 0.05);
+}
+// timeupdate fires even when the tab is hidden (rAF does not) - it is the
+// skip backstop; the rAF loop handles it at frame precision when visible
+vid.addEventListener("timeupdate", () => { maybeSkip(); dirty = true; });
+function tick() {
+  if (frac && (dirty || !vid.paused)) {
+    maybeSkip();
+    render();
+    $("timeDisp").textContent = fmt(vid.currentTime) + " / " + fmt(duration);
+    markCurrentRow();
+    dirty = false;
+  }
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+addEventListener("resize", () => dirty = true);
+
+// ---------- timeline interaction ----------
+const tl = $("timeline");
+let dragThresh = false, scrubbing = false;
+function evT(e) { const r = cvs.heat.getBoundingClientRect(); return xToT(e.clientX - r.left, r.width); }
+tl.addEventListener("pointerdown", e => {
+  if (!frac) return;
+  const r = cvs.curve.getBoundingClientRect();
+  if (e.target === cvs.curve) {
+    const top = 4, bot = r.height - 4, u = logU(tau());
+    const ty = u < 0 ? bot : bot - Math.max(0.02, u) * (bot - top);
+    if (Math.abs(e.clientY - r.top - ty) < 9) { dragThresh = true; tl.setPointerCapture(e.pointerId); return; }
+  }
+  scrubbing = true; tl.setPointerCapture(e.pointerId);
+  vid.currentTime = Math.max(0, Math.min(duration, evT(e))); dirty = true;
+});
+tl.addEventListener("pointermove", e => {
+  if (!frac) return;
+  if (dragThresh) {
+    const r = cvs.curve.getBoundingClientRect();
+    const top = 4, bot = r.height - 4;
+    const u = Math.max(0, Math.min(1, (bot - (e.clientY - r.top)) / (bot - top)));
+    const v = u <= 0.02 ? 0 : Math.pow(10, Math.log10(TAU_MIN) + u * -Math.log10(TAU_MIN));
+    $("thresh").value = v <= 0 ? 0 : Math.round(1000 * Math.log(v / TAU_MIN) / Math.log(TAU_MAX / TAU_MIN));
+    computeSegments(); return;
+  }
+  if (scrubbing) { vid.currentTime = Math.max(0, Math.min(duration, evT(e))); dirty = true; }
+  hoverT = evT(e); dirty = true;
+  const i = Math.max(0, Math.min(frac.length - 1, Math.floor(hoverT * fps)));
+  const seg = segs.find(s => hoverT >= s.a && hoverT < s.b);
+  tooltip.style.display = "block";
+  tooltip.style.left = Math.min(innerWidth - 190, e.clientX + 14) + "px";
+  tooltip.style.top = (e.clientY - 44) + "px";
+  tooltip.innerHTML = `<b>${fmt(hoverT)}</b> · change <b>${(frac[i] * 100).toFixed(3)}%</b>` +
+    (seg ? ` · ${seg.keep ? "keep" : "cut"}` : "");
+});
+tl.addEventListener("pointerup", () => { dragThresh = scrubbing = false; });
+tl.addEventListener("pointerleave", () => { hoverT = null; tooltip.style.display = "none"; dirty = true; });
+tl.addEventListener("wheel", e => {
+  if (!frac) return; e.preventDefault();
+  const r = cvs.heat.getBoundingClientRect(), tAt = xToT(e.clientX - r.left, r.width);
+  const f = Math.exp(e.deltaY * 0.0015);
+  let t0 = tAt + (view.t0 - tAt) * f, t1 = tAt + (view.t1 - tAt) * f;
+  const span = Math.max(0.25, Math.min(duration, t1 - t0));
+  t0 = Math.max(0, Math.min(tAt - span * (tAt - t0) / (t1 - t0), duration - span));
+  view = { t0, t1: t0 + span }; dirty = true;
+}, { passive: false });
+tl.addEventListener("dblclick", () => { view = { t0: 0, t1: duration }; dirty = true; });
+
+// ---------- segment list ----------
+function renderSegList() {
+  const list = $("seglist"); list.innerHTML = "";
+  const cuts = segs.filter(s => !s.keep).length;
+  $("segTitle").textContent = `Segments — ${segs.length} (${cuts} cut)`;
+  const shown = segs.slice(0, 400);
+  for (const s of shown) {
+    const row = document.createElement("div"); row.className = "segrow"; row.dataset.a = s.a; row.dataset.b = s.b;
+    const ovr = overrides.some(o => Math.abs(o.t0 - s.a) < 0.05 && Math.abs(o.t1 - s.b) < 0.05);
+    row.innerHTML = `<span class="badge ${s.keep ? "keep" : "cut"}${ovr ? " ovr" : ""}">${s.keep ? "KEEP" : "CUT"}</span>` +
+      `<span class="t">${fmt(s.a)} – ${fmt(s.b)}</span><span class="dur">${(s.b - s.a).toFixed(1)}s</span>` +
+      `<button title="Force ${s.keep ? "cut" : "keep"} this span">${s.keep ? "cut" : "keep"}</button>`;
+    row.querySelector(".t").onclick = () => { vid.currentTime = s.a + 0.01; dirty = true; };
+    row.querySelector("button").onclick = () => {
+      overrides = overrides.filter(o => o.t1 <= s.a + 0.02 || o.t0 >= s.b - 0.02);
+      if (!ovr) overrides.push({ t0: s.a, t1: s.b, force: s.keep ? "cut" : "keep" });
+      computeSegments();
+    };
+    list.appendChild(row);
+  }
+  if (segs.length > shown.length) {
+    const d = document.createElement("div"); d.className = "segrow";
+    d.textContent = `… ${segs.length - shown.length} more (zoom in or loosen threshold)`; list.appendChild(d);
+  }
+}
+function markCurrentRow() {
+  const t = vid.currentTime;
+  document.querySelectorAll(".segrow").forEach(r => {
+    r.classList.toggle("current", +r.dataset.a <= t && t < +r.dataset.b);
+  });
+}
+$("ovrClear").onclick = () => { overrides = []; computeSegments(); };
+
+// ---------- regions ----------
+const rc = $("regionCanvas");
+new ResizeObserver(() => drawRegions()).observe($("videoWrap"));
+function drawRegions() {
+  const [g, w, h] = ctx2d(rc);
+  g.clearRect(0, 0, w, h);
+  if (drawMode && meta) { // tile grid hint
+    const [tx, ty] = meta.grid;
+    g.strokeStyle = "rgba(255,255,255,0.08)"; g.lineWidth = 1; g.beginPath();
+    for (let i = 1; i < tx; i++) { g.moveTo(i / tx * w, 0); g.lineTo(i / tx * w, h); }
+    for (let i = 1; i < ty; i++) { g.moveTo(0, i / ty * h); g.lineTo(w, i / ty * h); }
+    g.stroke();
+  }
+  const all = dragRect ? [...rects, dragRect] : rects;
+  for (const r of all) {
+    const x = Math.min(r.x0, r.x1) * w, y = Math.min(r.y0, r.y1) * h;
+    const rw = Math.abs(r.x1 - r.x0) * w, rh = Math.abs(r.y1 - r.y0) * h;
+    g.strokeStyle = r.mode === "ignore" ? "#e66767" : "#0ca30c";
+    g.fillStyle = r.mode === "ignore" ? "rgba(230,103,103,0.12)" : "rgba(12,163,12,0.10)";
+    g.lineWidth = 1.5; g.setLineDash(r === dragRect ? [5, 4] : []);
+    g.fillRect(x, y, rw, rh); g.strokeRect(x, y, rw, rh); g.setLineDash([]);
+    g.fillStyle = g.strokeStyle; g.font = "11px system-ui";
+    g.fillText(r.mode, x + 4, y + 13);
+  }
+}
+function setDrawMode(m) {
+  drawMode = drawMode === m ? null : m;
+  $("addIgnore").classList.toggle("on", drawMode === "ignore");
+  $("addFocus").classList.toggle("on", drawMode === "focus");
+  rc.classList.toggle("draw", !!drawMode);
+  drawRegions();
+}
+$("addIgnore").onclick = () => setDrawMode("ignore");
+$("addFocus").onclick = () => setDrawMode("focus");
+rc.addEventListener("pointerdown", e => {
+  if (!drawMode) { // click-through: toggle play
+    togglePlay(); return;
+  }
+  const r = rc.getBoundingClientRect();
+  dragRect = { x0: (e.clientX - r.left) / r.width, y0: (e.clientY - r.top) / r.height,
+               x1: (e.clientX - r.left) / r.width, y1: (e.clientY - r.top) / r.height, mode: drawMode };
+  rc.setPointerCapture(e.pointerId);
+});
+rc.addEventListener("pointermove", e => {
+  if (!dragRect) return;
+  const r = rc.getBoundingClientRect();
+  dragRect.x1 = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+  dragRect.y1 = Math.max(0, Math.min(1, (e.clientY - r.top) / r.height));
+  drawRegions();
+});
+rc.addEventListener("pointerup", async () => {
+  if (!dragRect) return;
+  if (Math.abs(dragRect.x1 - dragRect.x0) > 0.01 && Math.abs(dragRect.y1 - dragRect.y0) > 0.01) {
+    rects.push(dragRect);
+    await refreshCurves();
+  }
+  dragRect = null; setDrawMode(null); renderChips(); drawRegions();
+});
+function renderChips() {
+  const c = $("regionChips"); c.innerHTML = "";
+  rects.forEach((r, i) => {
+    const chip = document.createElement("span"); chip.className = "chip " + r.mode;
+    chip.innerHTML = `${r.mode} ${i + 1}<span class="x">✕</span>`;
+    chip.querySelector(".x").onclick = async () => { rects.splice(i, 1); await refreshCurves(); renderChips(); drawRegions(); };
+    c.appendChild(chip);
+  });
+}
+
+// ---------- playback controls ----------
+function togglePlay() { vid.paused ? vid.play() : vid.pause(); }
+$("playBtn").onclick = togglePlay;
+vid.addEventListener("play", () => $("playBtn").textContent = "⏸");
+vid.addEventListener("pause", () => $("playBtn").textContent = "▶");
+vid.addEventListener("seeked", () => dirty = true);
+$("muteBtn").onclick = () => { vid.muted = !vid.muted; $("muteBtn").classList.toggle("on", vid.muted); };
+$("previewBtn").onclick = () => { previewMode = !previewMode; $("previewBtn").classList.toggle("on", previewMode); };
+addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  if (e.code === "Space") { e.preventDefault(); togglePlay(); }
+  if (e.key === "p") $("previewBtn").click();
+});
+
+// ---------- controls ----------
+$("thresh").addEventListener("input", computeSegments);
+$("minStill").addEventListener("input", computeSegments);
+$("pad").addEventListener("input", computeSegments);
+
+// ---------- server I/O ----------
+async function refreshCurves() {
+  const res = await fetch("/api/curves", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rects }) });
+  const d = await res.json();
+  frac = Float32Array.from(d.frac); fps = d.fps;
+  computeSegments();
+}
+async function poll() {
+  const s = await (await fetch("/api/state")).json();
+  const sel = $("fileSel");
+  if (sel.options.length !== s.files.length || [...sel.options].some((o, i) => o.value !== s.files[i])) {
+    sel.innerHTML = s.files.map(f => `<option${s.path && s.path.endsWith(f) ? " selected" : ""}>${f}</option>`).join("");
+  }
+  if (s.status === "analyzing") {
+    $("overlay").style.display = "flex";
+    $("ovMsg").textContent = "Analyzing on GPU… " + Math.round(s.progress * 100) + "%";
+    $("ovBar").style.width = (s.progress * 100) + "%";
+    setTimeout(poll, 300); return;
+  }
+  if (s.status === "error") { $("ovMsg").textContent = "Error: " + s.error; $("ovBar").style.width = "0%"; return; }
+  if (s.status === "ready") {
+    $("overlay").style.display = "none";
+    meta = s.meta; duration = meta.duration; view = { t0: 0, t1: duration };
+    $("analysisInfo").textContent =
+      `${meta.width}×${meta.height} · ${fmt(duration)} · analyzed @ ${meta.analysis_fps_rate || "cached"} fps`;
+    vid.src = "/video?v=" + encodeURIComponent(s.path);
+    await refreshCurves();
+  }
+}
+$("fileSel").addEventListener("change", async e => {
+  rects = []; overrides = []; renderChips();
+  await fetch("/api/load", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: e.target.value }) });
+  poll();
+});
+
+// ---------- export ----------
+$("exportBtn").onclick = async () => {
+  if (!keepList.length) { showToast("<b>Nothing to export</b> — everything is below the threshold.", null); return; }
+  const btn = $("exportBtn"); btn.disabled = true; btn.textContent = "Exporting…";
+  try {
+    const res = await fetch("/api/export", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ segments: keepList, mode: $("exportMode").value }) });
+    const r = await res.json();
+    if (!res.ok) throw new Error(r.detail || "export failed");
+    const name = r.out_path.split("/").pop();
+    showToast(
+      `<b>${name}</b> — ${fmt(r.out_duration)} (removed ${fmt(r.removed)})`,
+      `${r.copied_pct}% of output stream-copied bit-identical · ${r.reencoded_seconds}s re-encoded at boundaries · ` +
+      `${r.segments} segments · A/V delta ${r.av_desync_ms} ms · ` +
+      (r.decode_errors ? "⚠ decode warnings: " + r.decode_errors : "decode check clean"),
+      r.out_path);
+  } catch (err) { showToast("<b>Export failed</b>", String(err.message || err)); }
+  btn.disabled = false; btn.textContent = "Export motion-only";
+};
+function showToast(html, detail, revealPath) {
+  const t = $("toast");
+  t.innerHTML = `<div class="trow"><div>${html}</div>` +
+    (revealPath ? `<button id="revealBtn">Reveal in Finder</button>` : "") +
+    `<button id="toastX">✕</button></div>` + (detail ? `<div class="detail">${detail}</div>` : "");
+  t.style.display = "block";
+  if (revealPath) $("revealBtn").onclick = () =>
+    fetch("/api/reveal", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: revealPath }) });
+  $("toastX").onclick = () => t.style.display = "none";
+}
+
+poll();
+</script>
+</body>
+</html>

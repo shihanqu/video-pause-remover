@@ -1,0 +1,4 @@
+mlx>=0.32
+numpy
+fastapi
+uvicorn[standard]
