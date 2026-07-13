@@ -59,6 +59,16 @@ The first open of a file runs a one-time analysis pass, cached in `cache/` — e
 2. **Tune instantly.** Threshold with hysteresis (0.5× exit ratio) → absorb stills shorter than `--min-pause` → pad motion outward by `--pad`. Pure array math over the cached curve, identical in the UI (JS) and CLI (`segmentation.py`).
 3. **Smart-cut export.** Per kept segment, everything from the first keyframe onward is stream-copied; only the slice before it is re-encoded near-losslessly (B-frames disabled to match the source's GOP structure at the splice). Audio is cut with each piece (AAC at source bitrate, 4 ms edge fades so joins never click) and A/V travel together per piece, so sync error cannot accumulate; silent sources get a synthesized anchor track — stripped at the end — that keeps the spliced timestamps strictly monotonic. Output validation (decode check, duration, A/V delta) runs on every export.
 
+## How it compares
+
+Most "remove the dead air" tools cut on **audio silence**. This one cuts on **visual stillness** — whether the *picture* moves — which is the right signal for screen recordings, timelapses, and silent or narrated-over-a-frozen-screen capture, where an audio-based editor would keep every static frame you talked over. That difference drives the rest:
+
+- **vs. [auto-editor](https://github.com/WyattBlue/auto-editor)** — the closest existing tool; its `--edit motion` mode also cuts on frame difference. But it analyzes on the CPU, re-encodes the whole output (its cuts aren't keyframe-aligned, so it can't stream-copy), and has no spatial masking. Here analysis runs on the GPU, ~90% of the output is stream-copied bit-identical to the source, and you can mask regions.
+- **vs. `ffmpeg freezedetect` / `mpdecimate`** — the primitives. `freezedetect` only *reports* frozen spans; `mpdecimate` drops individual duplicate frames (a jittery, timelapse-like result) rather than detecting still *segments* and cutting them with hysteresis, a minimum-pause floor, and motion padding.
+- **vs. audio-silence removers** (Recut, TimeBolt, Descript, jumpcutter) — great when pauses coincide with silence; wrong tool for a silent or continuously-narrated screencast.
+
+What's uncommon is bundling all of it — visual-motion cutting, GPU analysis, a tunable change-heatmap UI, spatial ignore/focus masks, and a lossless-where-possible export — in one tool.
+
 ## Notes & limits
 
 - GPU paths: Apple Silicon (MLX/Metal, VideoToolbox) and NVIDIA (CuPy/CUDA, NVDEC). Anything else runs on the NumPy backend with software decode — the pipeline is decode-bound, so CPU analysis is still fast (~realtime × 15 on short clips). Stock ffmpeg + Python ≥ 3.11. The NVIDIA path shares its exact code with the tested NumPy path but hasn't been run on NVIDIA hardware yet — reports welcome.
