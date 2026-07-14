@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import threading
+import time
+import urllib.request
 from pathlib import Path
 
 import uvicorn
@@ -14,8 +17,10 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 import analysis as ana
 import export as exp
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parent
 PORT = 8765
+VIDEO_EXTS = (".mp4", ".mov", ".m4v")
+GITHUB_REPO = "shihanqu/video-pause-remover"
 
 app = FastAPI()
 STATE: dict = {"status": "idle", "progress": 0.0, "path": None, "analysis": None, "error": None}
@@ -23,13 +28,19 @@ LOCK = threading.Lock()
 
 
 def list_videos() -> list[str]:
-    vids = [p.name for p in ROOT.iterdir()
-            if p.suffix.lower() in (".mp4", ".mov", ".m4v")
+    """Absolute paths: videos in the project folder, plus whatever is loaded from elsewhere."""
+    vids = [p for p in ROOT.iterdir()
+            if p.suffix.lower() in VIDEO_EXTS
             and ".nostills" not in p.name and not p.name.startswith(".")]
-    return sorted(vids, key=lambda n: (ROOT / n).stat().st_mtime, reverse=True)
+    out = [str(p) for p in sorted(vids, key=lambda p: p.stat().st_mtime, reverse=True)]
+    cur = STATE.get("path")
+    if cur and cur not in out:
+        out.insert(0, cur)
+    return out
 
 
 def start_analysis(path: Path) -> None:
+    path = Path(path).resolve()
     with LOCK:
         STATE.update(status="analyzing", progress=0.0, path=str(path), analysis=None, error=None)
 
@@ -50,6 +61,33 @@ def index():
     return FileResponse(ROOT / "static" / "index.html")
 
 
+_stars: dict = {"count": None, "at": 0.0}
+
+
+@app.get("/api/stars")
+def stars():
+    """GitHub star count, cached (10 min after a hit, 1 min after a miss).
+
+    Proxied rather than fetched from the browser so reloads can't burn through
+    GitHub's 60/hr unauthenticated limit; offline just yields a null count and
+    the button still links to the repo.
+    """
+    now = time.time()
+    ttl = 600 if _stars["count"] is not None else 60
+    if now - _stars["at"] > ttl:
+        _stars["at"] = now
+        try:
+            req = urllib.request.Request(
+                f"https://api.github.com/repos/{GITHUB_REPO}",
+                headers={"Accept": "application/vnd.github+json",
+                         "User-Agent": "pause-remover"})
+            with urllib.request.urlopen(req, timeout=4) as r:
+                _stars["count"] = json.load(r).get("stargazers_count")
+        except Exception:
+            pass  # offline / rate-limited: keep last known value
+    return {"stars": _stars["count"], "url": f"https://github.com/{GITHUB_REPO}"}
+
+
 @app.get("/api/state")
 def state():
     out = {"status": STATE["status"], "progress": STATE["progress"],
@@ -64,9 +102,13 @@ def state():
 @app.post("/api/load")
 async def load(req: Request):
     body = await req.json()
-    path = ROOT / body["name"]
-    if not path.exists():
-        raise HTTPException(404, "file not found")
+    raw = body.get("path") or body.get("name") or ""
+    path = Path(raw)
+    if not path.is_absolute():
+        path = ROOT / raw
+    path = path.resolve()
+    if not path.exists() or path.suffix.lower() not in VIDEO_EXTS:
+        raise HTTPException(404, f"not a readable video: {raw}")
     start_analysis(path)
     return {"ok": True}
 
